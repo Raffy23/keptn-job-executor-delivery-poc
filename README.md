@@ -16,30 +16,30 @@
 I recommend using Google Kubernetes Engine, but local setups with K3s/K3d should also work fine.
 
 
-**Install Keptn 0.10.0 control-plane only**
+**Install Keptn 0.13.4 control-plane only**
 
 ```bash
-curl -sL https://get.keptn.sh | KEPTN_VERSION=0.10.0 bash
+curl -sL https://get.keptn.sh | KEPTN_VERSION=0.13.4 bash
 keptn install --endpoint-service-type=LoadBalancer
 ```
 
-**Install job-executor-service**
+**Install job-executor-service (remote-control-plane)**
 
-Minimum version: 0.1.6
-
-```bash
-helm upgrade --install -n keptn job-executor-service https://github.com/keptn-contrib/job-executor-service/releases/download/0.1.6/job-executor-service-0.1.6.tgz --set jobConfig.enableKubernetesApiAccess=true --wait
-```
-
-**Apply cluster role binding for job-executor-service**
-
-This gives the job-executor-service role `job-executor-service` full `cluster-admin` access to your Kubernetes cluster. This is not recommended for production setups, but it is needed for this PoC to work (e.g., `helm upgrade` needs to be able to create namespaces, secrets, ...)
-
-See [job-executor/clusterRoleBinding.yaml](job-executor/clusterRoleBinding.yaml) for details.
+Minimum version: a66fbe89b97a45873435d5b3cbbf97c9ee25e55e
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/christian-kreuzberger-dtx/keptn-job-executor-delivery-poc/main/job-executor/clusterRoleBinding.yaml
+KEPTN_API_PROTOCOL=http
+KEPTN_API_HOST=<INSERT-YOUR-HOSTNAME-HERE> # e.g., 1.2.3.4.nip.io
+ KEPTN_API_TOKEN=<INSERT-YOUR-KEPTN-API-TOKEN-HERE>
+
+TASK_SUBSCRIPTION=sh.keptn.event.je-deployment.triggered,sh.keptn.event.je-test.triggered
+
+helm upgrade --install --create-namespace -n <NAMESPACE> \
+  job-executor-service https://github.com/keptn-contrib/job-executor-service/releases/download/<VERSION>/job-executor-service-<VERSION>.tgz \
+ --set remoteControlPlane.topicSubscription=${TASK_SUBSCRIPTION},remoteControlPlane.api.protocol=${KEPTN_API_PROTOCOL},remoteControlPlane.api.hostname=${KEPTN_API_HOST},remoteControlPlane.api.token=${KEPTN_API_TOKEN} --wait
 ```
+
+(*Note*: Replace `<VERSION>` with the version you want to install; If the version is a commit hash, please clone the repository, checkout the specified commit and build it from source)
 
 **Install Prometheus Monitoring**
 
@@ -107,6 +107,35 @@ keptn add-resource --project=$PROJECT --service=helloservice --stage=qa --resour
 keptn configure monitoring prometheus --project=$PROJECT --service=helloservice
 ```
 
+**Create namespaces**
+
+Create the necessary namespaces, or modify the [job configuration](/job-executor-config.yaml) that the helm command contains `--create-namespaces`.
+But be aware that this does only work if the service account has cluster wide access for namespaces. 
+```bash
+kubectl create namespace podtato-head-production
+kubectl create namespace podtato-head-qa
+```
+
+**Configure the serviceAccount for helm**
+
+By default the job-executor-service does not grant access to the kubernetes api and therefore we have to define a service account for helm:
+
+```bash
+kubectl apply -f job-executor/helm-serviceAccount.yaml
+kubectl apply -f job-executor/helm-clusterRole.yaml
+```
+
+The permissions for the service account can be configured in two different ways:
+* *ClusterRole*: Allows the helm service to make modifications to the whole cluster and should not be used for production setups. You may also want to modify the [job configuration](/job-executor-config.yaml) to include the `--create-namespace` flag if you haven't create the namespaces.
+* *Role*: The appropiate namespaces with the role bindings have to be created before the job-executor-service can execute the jobs, otherwise helm is not able to install the services correctly. This approach also prevents the `--create-namespace` helm parameter from working correctly.
+
+For this PoC we use the *Role* binding approach, but be aware that it may not work for other services:
+
+```bash
+kubectl apply -f job-executor/helm-roleBinding.yaml
+```
+
+
 **Trigger delivery**
 
 ```bash
@@ -145,9 +174,17 @@ helm uninstall -n keptn prometheus-service
 helm uninstall prometheus --namespace monitoring
 ```
 
-**Remove role binding**
+**Remove role and role bindings**
+
 ```bash
-kubectl delete -f https://raw.githubusercontent.com/christian-kreuzberger-dtx/keptn-job-executor-delivery-poc/main/job-executor/clusterRoleBinding.yaml
+kubectl delete -f job-executor/helm-clusterRoleBinding.yaml
+kubectl delete -f job-executor/helm-roleBinding.yaml
+kubectl delete -f job-executor/helm-clusterRole.yaml
+```
+
+**Remove service account**
+```bash
+kubectl delete -f job-executor/helm-serviceAccount.yaml
 ```
 
 **Uninstall job-executor-service**
